@@ -1,0 +1,462 @@
+1. En önemli kural: Token budget = context window değil
+
+Mesela modelin 32K context'i varsa:
+
+32K'nın tamamını doldurmaya çalışma.
+
+Örneğin:
+
+Model context capacity: 32K
+
+Reserved budget
+────────────────────────
+System / Agent rules       2K
+Project memory             2K
+Conversation                4K
+Relevant source            12K
+Tool results                4K
+Attachments                 2K
+Response reserve            6K
+────────────────────────
+Total                      32K
+
+Ama ben bunu sabit rakamlarla kodlamam.
+
+Şöyle yaparım:
+
+max_context_tokens
+output_reserve_tokens
+safety_margin_tokens
+
+Model değişince:
+
+Gemma → farklı budget
+Qwen  → farklı budget
+Cloud → provider limitine göre
+
+Context Manager bunları otomatik hesaplar.
+
+2. Asıl önemli nokta: Input ve output'u ayır
+
+Bence mimaride bunu özellikle ayrı tutalım.
+
+Context Budget
+│
+├── Input Budget
+│    ├── System
+│    ├── Memory
+│    ├── Conversation
+│    ├── Files
+│    ├── Tools
+│    └── Attachments
+│
+└── Output Budget
+     └── Model response
+
+Çünkü modelin:
+
+“Sana 20K token verdim.”
+
+demesi başka,
+
+“20K token cevap üret.”
+
+demesi başka.
+
+Agent'ın büyük görevlerinde output reserve bırakmak gerekiyor.
+
+3. Dosya seçimini Context Manager yapmalı
+
+Burası bence RAG'siz sistemimizin kalbi.
+
+Kullanıcı:
+
+ProjectManager'daki create_project fonksiyonunu düzelt.
+
+dedi.
+
+Agent bütün repository'yi istememeli.
+
+Önce:
+
+project_manager.rs
+
+sonra gerekiyorsa:
+
+filesystem.rs
+project.rs
+error.rs
+
+gibi dependency/context ilişkili dosyaları getirir.
+
+Öncelik sırası mesela:
+
+1. User selected code
+2. Currently open file
+3. Directly referenced files
+4. Imported/dependent files
+5. Recently modified files
+6. Project memory
+7. Search results
+8. Other files
+
+Ve budget dolduğunda düşük öncelikliler çıkar.
+
+Bu RAG değil.
+
+Bu daha basit bir context selection / relevance system.
+
+4. Her dosyanın tamamını da göndermeyelim
+
+Örneğin:
+
+project_manager.rs
+
+3000 satır.
+
+Sen sadece:
+
+create_project()
+
+ile uğraşıyorsun.
+
+Context'e:
+
+create_project()
+ilgili struct
+ilgili imports
+ilgili helper
+
+gitsin.
+
+Gerekiyorsa Agent:
+
+“filesystem.rs'deki create_dir implementasyonunu da görmem lazım.”
+
+der ve tool ile onu ister.
+
+Context on-demand büyüsün.
+
+Bu çok önemli.
+
+5. Tool output'u context'i öldürmesin 😂
+
+Burası özellikle terminal için kritik.
+
+Agent:
+
+cargo test
+
+çalıştırdı.
+
+Terminal:
+
+18.000 satır
+
+döndürdü.
+
+18.000 satırı modele geri vermiyoruz.
+
+Rust Core'da:
+
+Tool Output Manager
+
+stdout
+stderr
+exit code
+duration
+errors
+warnings
+
+ayrı tutulur.
+
+Modele örneğin:
+
+Command: cargo test
+Exit code: 101
+
+Relevant errors:
+...
+
+Relevant output:
+last 100 lines
+
+gider.
+
+Ama ham output kaybolmaz.
+
+UI'da kullanıcı isterse tamamını görür.
+
+Bu ayrım çok güzel olur:
+
+UI → Full terminal output
+
+LLM → Relevant / truncated output
+6. Conversation da sonsuza kadar büyümeyecek
+
+Agent ile 100 tur konuştun.
+
+Her şeyi context'e taşımak:
+
+User 1
+AI 1
+Tool 1
+User 2
+AI 2
+Tool 2
+...
+User 100
+
+olmaz.
+
+Context Manager belli bir eşiğe geldiğinde:
+
+Conversation
+      ↓
+Summarizer
+      ↓
+Conversation Summary
+
+oluşturabilir.
+
+Örneğin:
+
+CURRENT TASK:
+Implement ProjectManager workspace creation.
+
+DECISIONS:
+- Project paths are handled by FileSystem service.
+- ProjectManager owns project metadata.
+- No global mutable state.
+
+COMPLETED:
+- create_project implemented
+- directory validation implemented
+
+CURRENT ISSUE:
+- Windows/WSL path normalization
+
+NEXT:
+- implement path normalization
+- run cargo test
+
+Ve eski conversation context'ten çıkar.
+
+Ama filesystem'deki gerçek kodu asla conversation summary'ye emanet etmeyiz.
+
+Kodun gerçek kaynağı:
+
+Disk / Git.
+
+7. Memory ile conversation'ı ayır
+
+Bu da çok önemli.
+
+Bence:
+
+.forge/
+   memory/
+      project.md
+      architecture.md
+      decisions.md
+      current_task.md
+
+olabilir.
+
+Ama memory:
+
+“Her request'te hepsini modele ver.”
+
+demek değil.
+
+Context Manager:
+
+Task
+ ↓
+Which memory is relevant?
+ ↓
+Only that section
+
+yapar.
+
+8. Context'e bir "source" sistemi koyardım
+
+Bu çok işimize yarar:
+
+ContextItem {
+    source: User | File | Memory | Tool | Conversation | Attachment,
+    priority: u8,
+    tokens: usize,
+    content: ...
+}
+
+Örneğin:
+
+user-selected-code      priority 100
+current-file            priority 90
+direct-dependency       priority 80
+memory                  priority 70
+conversation            priority 60
+terminal-output         priority 50
+
+Budget aşılırsa:
+
+sort by priority
+↓
+keep highest value items
+↓
+drop/truncate lower value items
+
+Böylece Context Manager “ne göndereceğim?” sorusuna sistematik cevap verir.
+
+9. Mac OOM konusunda en kritik ayrım
+
+Burada küçük ama önemli bir düzeltme yapayım:
+
+Token budget'i kısmak Mac RAM'ini birebir aynı oranda düşürmez.
+
+Local LLM'de özellikle KV cache önemli.
+
+Kabaca:
+
+Model weights
++
+KV cache
++
+runtime memory
++
+context
++
+application
+
+toplam RAM baskısını oluşturur.
+
+Dolayısıyla Forge'un görevi sadece:
+
+“20K token gönderme.”
+
+değil.
+
+Aynı zamanda:
+
+“Context'i gereksiz yere büyütme.”
+
+olmalı.
+
+Özellikle agent uzun süre çalışırken context'in sürekli büyümesini engellemek önemli.
+
+10. Context Manager modelden bağımsız olsun
+
+Ben bunu kesinlikle Rust Core'da şöyle ayırırdım:
+
+Rust Core
+│
+├── Agent
+│
+├── ContextManager
+│
+│   ├── ContextStore
+│   ├── ContextSelector
+│   ├── TokenBudget
+│   ├── ConversationCompressor
+│   ├── ToolOutputManager
+│   └── AttachmentManager
+│
+└── ModelAdapter
+      ├── Gemma
+      ├── Qwen
+      ├── OpenAI
+      ├── Gemini
+      └── ...
+
+Context Manager'ın Gemma'dan haberi olmayacak.
+
+Model Adapter:
+
+“Benim context limitim bu.”
+
+der.
+
+Context Manager:
+
+“Tamam, bütçeyi ona göre ayarlıyorum.”
+
+Bu kadar.
+
+11. Bir de context preview kesin yapalım
+
+Bunu özellikle isterim abi. 😂
+
+Agent çalışırken debug ekranında:
+
+CONTEXT
+────────────────────────────
+System              1,840
+Memory                920
+Conversation        3,210
+Files               8,420
+Terminal            1,130
+Attachments           860
+────────────────────────────
+Input              16,380
+Output reserve      6,000
+Safety margin       1,620
+────────────────────────────
+Total budget       24,000
+
+Ve yanında:
+
+Included files
+
+✓ project_manager.rs     4,200
+✓ filesystem.rs          2,800
+✓ project.rs             1,420
+
+Excluded
+
+× README.md
+× unrelated.rs
+× old_test.rs
+
+Bunu görürsek agent'ın neden saçmaladığını anlamak çok kolaylaşır.
+
+Benim Forge için nihai modelim
+                 USER
+                   │
+                   ▼
+             SINGLE AGENT
+                   │
+                   ▼
+          ┌─────────────────┐
+          │ CONTEXT MANAGER │
+          └─────────────────┘
+                   │
+        ┌──────────┼───────────┐
+        ▼          ▼           ▼
+     SELECT      BUDGET      COMPRESS
+     CONTEXT     TOKENS      HISTORY
+        │          │           │
+        └──────────┼───────────┘
+                   ▼
+             CONTEXT BUILDER
+                   │
+                   ▼
+              MODEL ADAPTER
+                   │
+          ┌────────┴────────┐
+          ▼                 ▼
+       Gemma             Cloud API
+          │                 │
+          └────────┬────────┘
+                   ▼
+                 TOOLS
+          ┌────────┼─────────┐
+          ▼        ▼         ▼
+        Files   Terminal    Git
+          │        │         │
+          └────────┼─────────┘
+                   ▼
+             Context Update
+                   │
+                   ▼
+               NEXT TURN

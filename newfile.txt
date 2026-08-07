@@ -1,0 +1,7 @@
+# /home/levent/deneme_folder/testproje/newfile.txt
+def sayilari_topla(sayi1, sayi2):
+    sonuc = sayi1 + sayi2
+    print(f"{sayi1} + {sayi2} = {sonuc}")
+
+# Örnek kullanım:
+sayilari_topla(5, 10)

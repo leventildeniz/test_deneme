@@ -1,0 +1,8 @@
+# Cargo.toml
+[dependencies]
+# JSON desteği ile birlikte reqwest
+reqwest = { version = "0.11", features = ["json"] } 
+# Asenkron çalışma zamanı
+tokio = { version = "1", features = ["full"] } 
+# JSON verilerini Rust yapılarına (struct) dönüştürmek için
+serde = { version = "1.0", features = ["derive"] }
