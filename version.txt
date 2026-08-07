@@ -1,0 +1,5 @@
+// version.txt
+Project: ELARA / Forge IDE
+Version: 0.0.1-alpha
+Status: Development
+Architect: Levent & Cimcime
